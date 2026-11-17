@@ -273,7 +273,10 @@ class Data:
         value: The value that it should be changed to
         """
         if key not in show:
-            raise utils.DataError('Invalid key for queue update.')
+            if key in utils.show():
+                show[key] = utils.show()[key]
+            else:
+                raise utils.DataError('Invalid key for queue update.')
 
         # Do update on memory
         show[key] = value
@@ -304,6 +307,56 @@ class Data:
         self._emit_signal('queue_changed', self.queue)
         self.msg.info("Queued update for %s" % show['title'])
         self.msg.debug("Queued: {} -> {}".format(key, value))
+
+        # Immediately process the action if necessary
+        if self._is_queue_ready():
+            self.process_queue()
+
+    def queue_updates(self, show, updates):
+        """
+        Queues multiple field updates for a show at once.
+
+        show: Show dictionary
+        updates: Dictionary of key-value pairs to update
+        """
+        if not updates:
+            return
+
+        for key, value in updates.items():
+            if key not in show:
+                if key in utils.show():
+                    show[key] = utils.show()[key]
+                else:
+                    raise utils.DataError('Invalid key for queue update: %s' % key)
+            show[key] = value
+
+        # Check if the show update is already in queue
+        exists = False
+        for q in self.queue:
+            if q['id'] == show['id'] and q['action'] in ['add', 'update']:
+                for key, value in updates.items():
+                    q[key] = value
+                exists = True
+                break
+
+        if not exists:
+            item = {'id': show['id'],
+                    'my_id': show['my_id'],
+                    'action': 'update',
+                    'title': show['title'],
+                    }
+            for key, value in updates.items():
+                item[key] = value
+            self.queue.append(item)
+
+        show['queued'] = True
+
+        self._save_queue()
+        self._save_cache()
+        self._emit_signal('queue_changed', self.queue)
+        self.msg.info("Queued update for %s" % show['title'])
+        for key, value in updates.items():
+            self.msg.debug("Queued: {} -> {}".format(key, value))
 
         # Immediately process the action if necessary
         if self._is_queue_ready():

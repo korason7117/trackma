@@ -79,6 +79,9 @@ class Engine:
                'prompt_for_add':    None,
                'tracker_state':     None,
                'episode_missing': None,
+               'entry_changed':    None,
+               'tags_changed':     None,
+               'show_info_changed': None,
                }
 
     def __init__(self, account=None, message_handler=None, accountnum=None):
@@ -174,8 +177,10 @@ class Engine:
     def _emit_signal(self, signal, *args):
         try:
             # Call the signal function
-            if self.signals[signal]:
-                self.signals[signal](*args)
+            # Signals nobody connected to are simply ignored
+            callback = self.signals.get(signal)
+            if callback:
+                callback(*args)
         except AttributeError:
             pass
 
@@ -761,6 +766,124 @@ class Engine:
 
         # Emit signal
         self._emit_signal('tags_changed', show)
+
+        return show
+
+    def set_notes(self, showid, newnotes):
+        """
+        Updates the notes/description of the specified **showid** to **newnotes**
+        and queues the list update for the next sync.
+        """
+        show = self.get_show_info(showid)
+        if show.get('my_notes') == newnotes:
+            return show
+
+        self.msg.info("Updating show %s notes..." % show['title'])
+        self.data_handler.queue_update(show, 'my_notes', newnotes)
+        self._emit_signal('entry_changed', show)
+        return show
+
+    def get_custom_lists(self):
+        """
+        Returns the list of known custom list names for the current tracker.
+        """
+        api = getattr(self.data_handler, 'api', None)
+        if api and hasattr(api, 'get_custom_lists'):
+            return api.get_custom_lists()
+        return self.mediainfo.get('custom_lists', [])
+
+    def set_custom_lists(self, showid, custom_lists):
+        """
+        Updates the custom lists of the specified **showid** to **custom_lists**
+        and queues the list update for the next sync.
+        """
+        show = self.get_show_info(showid)
+        if show.get('my_custom_lists') == custom_lists:
+            return show
+
+        self.msg.info("Updating show %s custom lists..." % show['title'])
+        self.data_handler.queue_update(show, 'my_custom_lists', custom_lists)
+        self._emit_signal('entry_changed', show)
+        return show
+
+    def set_advanced_scores(self, showid, advanced_scores):
+        """
+        Updates the advanced scores of the specified **showid** to **advanced_scores**
+        and queues the list update for the next sync.
+        """
+        show = self.get_show_info(showid)
+        if show.get('my_advanced_scores') == advanced_scores:
+            return show
+
+        self.msg.info("Updating show %s advanced scores..." % show['title'])
+        self.data_handler.queue_update(show, 'my_advanced_scores', advanced_scores)
+        self._emit_signal('entry_changed', show)
+        return show
+
+    def set_anilist_details(self, showid, values):
+        """
+        Updates an AniList entry's lists, description/notes, and all scores together.
+        values: dict containing optional 'status', 'score', 'notes', 'custom_lists', 'advanced_scores'
+        """
+        show = self.get_show_info(showid)
+        if not show:
+            raise utils.EngineError("Show not found.")
+
+        updates = {}
+        old_status = show.get('my_status')
+
+        # Status
+        if 'status' in values and values['status'] is not None:
+            new_status = values['status']
+            if old_status != new_status:
+                _statuses = self.mediainfo.get('statuses_dict', {})
+                if new_status in _statuses:
+                    updates['my_status'] = new_status
+                    self.msg.info("Updating show %s status to %s..." %
+                                  (show['title'], _statuses[new_status]))
+
+        # Overall Score
+        if 'score' in values and values['score'] is not None:
+            new_score = values['score']
+            if show.get('my_score') != new_score:
+                if self.mediainfo.get('can_score'):
+                    if isinstance(self.mediainfo.get('score_step', 1), int):
+                        new_score = int(new_score)
+                    else:
+                        new_score = float(new_score)
+                    updates['my_score'] = new_score
+                    self.msg.info("Updating show %s score to %s..." %
+                                  (show['title'], new_score))
+
+        # Notes / Description
+        if 'notes' in values and values['notes'] is not None:
+            new_notes = values['notes']
+            if (show.get('my_notes') or '') != new_notes:
+                updates['my_notes'] = new_notes
+                self.msg.info("Updating show %s notes..." % show['title'])
+
+        # Custom Lists
+        if 'custom_lists' in values and values['custom_lists'] is not None:
+            new_lists = values['custom_lists']
+            if show.get('my_custom_lists') != new_lists:
+                updates['my_custom_lists'] = new_lists
+                self.msg.info("Updating show %s custom lists..." % show['title'])
+
+        # Advanced Scores
+        if 'advanced_scores' in values and values['advanced_scores'] is not None:
+            new_adv = values['advanced_scores']
+            if show.get('my_advanced_scores') != new_adv:
+                updates['my_advanced_scores'] = new_adv
+                self.msg.info("Updating show %s advanced scores..." % show['title'])
+
+        if updates:
+            self.data_handler.queue_updates(show, updates)
+            if 'my_status' in updates:
+                self._emit_signal('status_changed', show, old_status)
+            if 'my_score' in updates:
+                self._emit_signal('score_changed', show)
+            self._emit_signal('entry_changed', show)
+            self._emit_signal('show_info_changed', show)
 
         return show
 

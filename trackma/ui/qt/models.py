@@ -397,7 +397,8 @@ class ShowListProxy(QtCore.QSortFilterProxyModel):
         self.invalidateFilter()
 
     def clearColumnFilters(self):
-        self.filters = {}
+        self.filter_columns = None
+        self.invalidateFilter()
 
     def setFilterColumns(self, columns):
         self.filter_columns = columns
@@ -408,17 +409,67 @@ class ShowListProxy(QtCore.QSortFilterProxyModel):
         self.invalidateFilter()
 
     def filterAcceptsRow(self, source_row, source_parent):
-        if self.filter_status is not None and self.sourceModel().showlist[source_row]['my_status'] != self.filter_status:
+        source_model = self.sourceModel()
+        if not hasattr(source_model, 'showlist') or not source_model.showlist:
+            return False
+        if source_row >= len(source_model.showlist):
             return False
 
-        if self.filter_columns:
-            for col in range(self.sourceModel().columnCount(source_parent)):
-                index = self.sourceModel().index(source_row, col)
-                if (col in self.filter_columns and
-                        self.filter_columns[col] not in str(self.sourceModel().data(index, QtCore.Qt.ItemDataRole.DisplayRole))):
-                    return self.filter_invert
+        show = source_model.showlist[source_row]
+        if self.filter_status is not None and show.get('my_status') != self.filter_status:
+            return False
 
-        return self.filter_invert != super(ShowListProxy, self).filterAcceptsRow(source_row, source_parent)
+        case_sensitive = (self.filterCaseSensitivity() == QtCore.Qt.CaseSensitivity.CaseSensitive)
+
+        if self.filter_columns:
+            for col, filter_val in self.filter_columns.items():
+                if col == ShowListModel.COL_TITLE:
+                    titles = [show.get('title', '')]
+                    aliases = show.get('aliases') or []
+                    if isinstance(aliases, list):
+                        titles.extend(aliases)
+                    elif isinstance(aliases, (str, bytes)):
+                        titles.append(str(aliases))
+
+                    if hasattr(source_model, 'altnames') and show.get('id') in source_model.altnames:
+                        titles.append(source_model.altnames[show['id']])
+
+                    matched_title = False
+                    f_val = filter_val if case_sensitive else filter_val.lower()
+                    for t in titles:
+                        if not t:
+                            continue
+                        t_str = str(t) if case_sensitive else str(t).lower()
+                        if f_val in t_str:
+                            matched_title = True
+                            break
+                    if not matched_title:
+                        return self.filter_invert != False
+                else:
+                    index = source_model.index(source_row, col)
+                    cell_val = str(source_model.data(index, QtCore.Qt.ItemDataRole.DisplayRole))
+                    f_val = filter_val if case_sensitive else filter_val.lower()
+                    c_val = cell_val if case_sensitive else cell_val.lower()
+                    if f_val not in c_val:
+                        return self.filter_invert != False
+
+        regex = self.filterRegularExpression()
+        if not regex.pattern():
+            general_matches = True
+        else:
+            general_matches = super(ShowListProxy, self).filterAcceptsRow(source_row, source_parent)
+            if not general_matches:
+                aliases = show.get('aliases') or []
+                if isinstance(aliases, list):
+                    for alias in aliases:
+                        if alias and regex.match(str(alias)).hasMatch():
+                            general_matches = True
+                            break
+                elif isinstance(aliases, (str, bytes)):
+                    if regex.match(str(aliases)).hasMatch():
+                        general_matches = True
+
+        return self.filter_invert != general_matches
 
     def lessThan(self, left, right):
         col = left.column()

@@ -526,7 +526,10 @@ def show():
         'image':        '',
         'image_thumb':  '',
         'queued':       False,
-        'my_last-update': None
+        'my_last-update': None,
+        'my_notes':     '',
+        'my_custom_lists': {},
+        'my_advanced_scores': {}
     }
 
 

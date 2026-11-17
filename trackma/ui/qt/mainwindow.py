@@ -29,6 +29,7 @@ from trackma import utils
 from trackma.accounts import AccountManager
 from trackma.ui.qt.accounts import AccountDialog
 from trackma.ui.qt.add import AddDialog
+from trackma.ui.qt.anilist_edit import AnilistEditDialog
 from trackma.ui.qt.details import DetailsDialog
 from trackma.ui.qt.settings import SettingsDialog
 from trackma.ui.qt.util import FilterBar, getIcon
@@ -133,6 +134,11 @@ class MainWindow(QMainWindow):
         self.action_details.setStatusTip(
             'Show detailed information about the selected show.')
         self.action_details.triggered.connect(self.s_show_details)
+        self.action_edit_entry = QAction(
+            getIcon('document-edit'), 'Edit &Entry (Lists, Description, Scores)...', self)
+        self.action_edit_entry.setStatusTip(
+            'Edit entry details including lists, notes/description, and all scores.')
+        self.action_edit_entry.triggered.connect(self.s_edit_entry_dialog)
         self.action_altname = QAction('Change &alternate name...', self)
         self.action_altname.setStatusTip(
             'Set an alternate title for the tracker.')
@@ -209,6 +215,7 @@ class MainWindow(QMainWindow):
         self.menu_show_context = QMenu()
         self.menu_show_context.addMenu(self.menu_play)
         self.menu_show_context.addAction(self.action_details)
+        self.menu_show_context.addAction(self.action_edit_entry)
         self.menu_show_context.addAction(action_open_folder)
         self.menu_show_context.addAction(self.action_altname)
         self.menu_show_context.addSeparator()
@@ -373,6 +380,10 @@ class MainWindow(QMainWindow):
         self.show_dec_btn.clicked.connect(self.s_rem_episode)
         self.show_dec_btn.setShortcut('Ctrl+Left')
         self.show_dec_btn.setToolTip('Decrement number of episodes watched')
+        self.show_edit_entry_btn = QToolButton()
+        self.show_edit_entry_btn.setIcon(getIcon('document-edit'))
+        self.show_edit_entry_btn.setToolTip('Edit entry details (Lists, Description, All Scores)')
+        self.show_edit_entry_btn.clicked.connect(self.s_edit_entry_dialog)
         show_score_label = QLabel('Score:')
         self.show_score = QDoubleSpinBox()
         self.show_score.setMinimumWidth(spinbox_width)
@@ -390,6 +401,7 @@ class MainWindow(QMainWindow):
         small_btns_hbox.addWidget(self.show_dec_btn)
         small_btns_hbox.addWidget(self.show_play_btn)
         small_btns_hbox.addWidget(self.show_inc_btn)
+        small_btns_hbox.addWidget(self.show_edit_entry_btn)
         small_btns_hbox.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
 
         left_box.addRow(self.show_image)
@@ -593,12 +605,14 @@ class MainWindow(QMainWindow):
         self.show_inc_btn.setEnabled(enable)
         self.show_dec_btn.setEnabled(enable)
         self.show_play_btn.setEnabled(enable)
+        self.show_edit_entry_btn.setEnabled(enable)
         self.show_status.setEnabled(enable)
         self.action_play_next.setEnabled(enable)
         self.action_play_dialog.setEnabled(enable)
         self.action_altname.setEnabled(enable)
         self.action_delete.setEnabled(enable)
         self.action_details.setEnabled(enable)
+        self.action_edit_entry.setEnabled(enable)
 
     def _update_queue_counter(self, queue):
         self.queue_text.setText("Unsynced items: %d" % queue)
@@ -1058,6 +1072,8 @@ class MainWindow(QMainWindow):
                     expr_list.append(expr)
             expression = ' '.join(expr_list)
             self.view.model().setFilterColumns(expr_dict)
+        else:
+            self.view.model().setFilterColumns(None)
 
         if self.show_filter_casesens.isChecked():
             self.view.model().setFilterCaseSensitivity(QtCore.Qt.CaseSensitivity.CaseSensitive)
@@ -1232,6 +1248,21 @@ class MainWindow(QMainWindow):
         self.detailswindow = DetailsDialog(None, self.worker, show)
         self.detailswindow.setModal(True)
         self.detailswindow.show()
+
+    def s_edit_entry_dialog(self):
+        if not self.selected_show_id:
+            return
+
+        show = self.worker.engine.get_show_info(self.selected_show_id)
+        if not show:
+            return
+
+        dialog = AnilistEditDialog(self, self.worker, show)
+        if dialog.exec():
+            values = dialog.get_values()
+            self._busy(True)
+            self.worker_call('set_anilist_details', self.r_generic,
+                             self.selected_show_id, values)
 
     def s_add(self):
         current_status = self.notebook.tabData(self.notebook.currentIndex())

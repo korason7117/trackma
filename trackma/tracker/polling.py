@@ -41,9 +41,15 @@ class PollingTracker(tracker.TrackerBase):
             self.msg.warn("Couldn't execute lsof. Disabling tracker.")
             self.disable()
             return None
+        except subprocess.CalledProcessError as e:
+            # lsof exits with 1 when it finds no matching open files, which
+            # is the normal "nothing is playing" case, not an error.
+            if e.returncode != 1:
+                self.msg.warn("lsof failed (exit status {}).".format(e.returncode))
+            return None
 
         for line in output.splitlines():
-            if line[0] == 'n' and utils.is_media(line):
+            if line[:1] == 'n' and utils.is_media(line):
                 return os.path.basename(line[1:])
 
         return None

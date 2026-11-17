@@ -399,8 +399,15 @@ class Trackma_cmd(command.Cmd):
         altnames = self.engine.altnames()
 
         def matches_show(show):
-            titles = [show['title'], *show['aliases']]
-            if altname := altnames.get(show['id']):
+            aliases = show.get('aliases') or []
+            if isinstance(aliases, list):
+                alias_list = [str(a) for a in aliases if a]
+            elif isinstance(aliases, (str, bytes)):
+                alias_list = [str(aliases)]
+            else:
+                alias_list = []
+            titles = [show.get('title', '')] + alias_list
+            if altname := altnames.get(show.get('id')):
                 titles.append(altname)
             return any(map(compiled_pattern.search, titles))
 

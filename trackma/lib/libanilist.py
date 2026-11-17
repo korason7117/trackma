@@ -159,6 +159,12 @@ class libanilist(lib):
         if self.scoreformat:
             self._apply_scoreformat(self.scoreformat)
 
+        self.custom_lists = self._get_userconfig('custom_lists_' + self.mediatype) or []
+        self.advanced_scoring = self._get_userconfig('advanced_scoring_' + self.mediatype) or [
+            'Story', 'Characters', 'Visuals', 'Audio', 'Enjoyment'
+        ]
+        self.advanced_scoring_enabled = self._get_userconfig('advanced_scoring_enabled_' + self.mediatype) or False
+
         self.opener = urllib.request.build_opener()
         self.opener.addheaders = [('User-agent', self.user_agent)]
 
@@ -214,14 +220,70 @@ class libanilist(lib):
 
     def _refresh_user_info(self):
         self.msg.info('Refreshing user details...')
-        query = '{Viewer{ id name avatar{large} options{titleLanguage displayAdultContent} mediaListOptions{scoreFormat} }}'
+        query = '''{Viewer{
+  id name avatar{large} options{titleLanguage displayAdultContent}
+  mediaListOptions{
+    scoreFormat
+    animeList { customLists advancedScoring advancedScoringEnabled }
+    mangaList { customLists advancedScoring advancedScoringEnabled }
+  }
+}}'''
         data = self._request(query)['data']['Viewer']
 
         self._set_userconfig('userid', data['id'])
         self._set_userconfig('username', data['name'])
+
+        m_opts = data.get('mediaListOptions') or {}
+        user_opts = m_opts.get('animeList' if self.mediatype == 'anime' else 'mangaList') or {}
+        if user_opts.get('customLists'):
+            self.custom_lists = list(user_opts['customLists'])
+            self._set_userconfig('custom_lists_' + self.mediatype, self.custom_lists)
+        if user_opts.get('advancedScoring'):
+            self.advanced_scoring = list(user_opts['advancedScoring'])
+            self._set_userconfig('advanced_scoring_' + self.mediatype, self.advanced_scoring)
+        if 'advancedScoringEnabled' in user_opts:
+            self.advanced_scoring_enabled = bool(user_opts['advancedScoringEnabled'])
+            self._set_userconfig('advanced_scoring_enabled_' + self.mediatype, self.advanced_scoring_enabled)
+
         self._emit_signal('userconfig_changed')
 
         self.userid = data['id']
+
+    def get_custom_lists(self):
+        """Return custom lists, fetching from upstream AniList if not cached."""
+        if getattr(self, 'custom_lists', None):
+            return self.custom_lists
+
+        cached = self._get_userconfig('custom_lists_' + self.mediatype)
+        if cached:
+            self.custom_lists = list(cached)
+            return self.custom_lists
+
+        try:
+            self.check_credentials()
+            query = '''query {
+  Viewer {
+    mediaListOptions {
+      animeList { customLists advancedScoring advancedScoringEnabled }
+      mangaList { customLists advancedScoring advancedScoringEnabled }
+    }
+  }
+}'''
+            res = self._request(query)
+            opts = res['data']['Viewer']['mediaListOptions']
+            user_opts = opts.get('animeList' if self.mediatype == 'anime' else 'mangaList') or {}
+            self.custom_lists = list(user_opts.get('customLists') or [])
+            self._set_userconfig('custom_lists_' + self.mediatype, self.custom_lists)
+            if 'advancedScoring' in user_opts and user_opts['advancedScoring']:
+                self.advanced_scoring = list(user_opts['advancedScoring'])
+                self._set_userconfig('advanced_scoring_' + self.mediatype, self.advanced_scoring)
+            if 'advancedScoringEnabled' in user_opts:
+                self.advanced_scoring_enabled = bool(user_opts['advancedScoringEnabled'])
+                self._set_userconfig('advanced_scoring_enabled_' + self.mediatype, self.advanced_scoring_enabled)
+            return self.custom_lists
+        except Exception as e:
+            self.msg.warn(f"Could not retrieve AniList custom lists: {e}")
+            return getattr(self, 'custom_lists', []) or []
 
     def fetch_list(self):
         self.check_credentials()
@@ -240,6 +302,16 @@ class libanilist(lib):
     user {
       mediaListOptions {
         scoreFormat
+        animeList {
+          customLists
+          advancedScoring
+          advancedScoringEnabled
+        }
+        mangaList {
+          customLists
+          advancedScoring
+          advancedScoringEnabled
+        }
       }
     }
   }
@@ -248,6 +320,9 @@ class libanilist(lib):
 fragment mediaListEntry on MediaList {
   id
   score
+  notes
+  customLists
+  advancedScores
   progress
   startedAt { year month day }
   updatedAt
@@ -280,6 +355,24 @@ fragment mediaListEntry on MediaList {
         self._apply_scoreformat(self.scoreformat)
 
         self._set_userconfig('scoreformat_' + self.mediatype, self.scoreformat)
+
+        user_opts = data['user']['mediaListOptions'].get(
+            'animeList' if self.mediatype == 'anime' else 'mangaList') or {}
+        lists_set = list(user_opts.get('customLists') or [])
+        for remotelist in data.get('lists', []):
+            if remotelist.get('isCustomList'):
+                name = remotelist.get('name')
+                if name and name not in lists_set:
+                    lists_set.append(name)
+        self.custom_lists = lists_set
+        self.advanced_scoring = user_opts.get('advancedScoring') or [
+            'Story', 'Characters', 'Visuals', 'Audio', 'Enjoyment'
+        ]
+        self.advanced_scoring_enabled = user_opts.get('advancedScoringEnabled', False)
+        self._set_userconfig('custom_lists_' + self.mediatype, self.custom_lists)
+        self._set_userconfig('advanced_scoring_' + self.mediatype, self.advanced_scoring)
+        self._set_userconfig('advanced_scoring_enabled_' + self.mediatype, self.advanced_scoring_enabled)
+
         self._emit_signal('userconfig_changed')
 
         for remotelist in data['lists']:
@@ -288,7 +381,7 @@ fragment mediaListEntry on MediaList {
             if my_status not in self.media_info()['statuses']:
                 continue
             if remotelist['isCustomList']:
-                continue  # Maybe do something with this later
+                continue  # Standard status entries processed below
             for item in remotelist['entries']:
                 show = utils.show()
                 media = item['media']
@@ -303,6 +396,9 @@ fragment mediaListEntry on MediaList {
                     'my_progress': self._c(item['progress']),
                     'my_status': my_status,
                     'my_score': self._c(item['score']),
+                    'my_notes': item.get('notes') or '',
+                    'my_custom_lists': item.get('customLists') or {},
+                    'my_advanced_scores': item.get('advancedScores') or {},
                     'total': self._c(media[self.total_str]),
                     'image': media['coverImage']['large'],
                     'image_thumb': media['coverImage']['medium'],
@@ -317,8 +413,22 @@ fragment mediaListEntry on MediaList {
                     showdata['next_ep_number'] = media['nextAiringEpisode']['episode']
                     showdata['next_ep_time'] = self._int2date(
                         media['nextAiringEpisode']['airingAt'])
-                show.update({k: v for k, v in showdata.items() if v})
+                for k, v in showdata.items():
+                    if v is not None:
+                        show[k] = v
                 showlist[showid] = show
+
+        # Record memberships in custom lists
+        for remotelist in data['lists']:
+            if remotelist.get('isCustomList'):
+                list_name = remotelist.get('name')
+                for item in remotelist.get('entries', []):
+                    showid = item['media']['id']
+                    if showid in showlist and list_name:
+                        if not isinstance(showlist[showid].get('my_custom_lists'), dict):
+                            showlist[showid]['my_custom_lists'] = {}
+                        showlist[showid]['my_custom_lists'][list_name] = True
+
         return showlist
 
     args_SaveMediaListEntry = {
@@ -326,10 +436,14 @@ fragment mediaListEntry on MediaList {
         'mediaId': 'Int',                    # The id of the media the entry is of
         'status': 'MediaListStatus',         # The watching/reading status
         'scoreRaw': 'Int',                   # The score of the media in 100 point
+        'score': 'Float',                    # Score in user format
         # The amount of episodes/chapters consumed by the user
         'progress': 'Int',
         'startedAt': 'FuzzyDateInput',       # When the entry was started by the user
         'completedAt': 'FuzzyDateInput',     # When the entry was completed by the user
+        'notes': 'String',
+        'customLists': '[String]',
+        'advancedScores': '[Float]',
     }
 
     def _update_entry(self, item):
@@ -351,10 +465,38 @@ fragment mediaListEntry on MediaList {
         if 'my_finish_date' in item:
             values['completedAt'] = self._date2dict(item['my_finish_date'])
 
+        if 'my_notes' in item:
+            values['notes'] = item['my_notes'] or ''
+        elif 'notes' in item:
+            values['notes'] = item['notes'] or ''
+
+        if 'my_custom_lists' in item:
+            raw_lists = item['my_custom_lists']
+            if isinstance(raw_lists, dict):
+                values['customLists'] = [k for k, v in raw_lists.items() if v]
+            elif isinstance(raw_lists, (list, tuple, set)):
+                values['customLists'] = list(raw_lists)
+            elif isinstance(raw_lists, str):
+                values['customLists'] = [x.strip() for x in raw_lists.split(',') if x.strip()]
+        elif 'customLists' in item:
+            values['customLists'] = item['customLists']
+
+        if 'my_advanced_scores' in item:
+            adv = item['my_advanced_scores']
+            if isinstance(adv, dict):
+                cats = getattr(self, 'advanced_scoring', None) or [
+                    'Story', 'Characters', 'Visuals', 'Audio', 'Enjoyment'
+                ]
+                values['advancedScores'] = [float(adv.get(c, 0.0) or 0.0) for c in cats]
+            elif isinstance(adv, (list, tuple)):
+                values['advancedScores'] = [float(x or 0.0) for x in adv]
+        elif 'advancedScores' in item:
+            values['advancedScores'] = item['advancedScores']
+
         vars_defn = ', '.join(
             ['${}: {}'.format(k, self.args_SaveMediaListEntry[k]) for k in values.keys()])
         subs_defn = ', '.join(['{0}: ${0}'.format(k) for k in values.keys()])
-        query = 'mutation ({0}) {{ SaveMediaListEntry({1}) {{id updatedAt}} }}'.format(
+        query = 'mutation ({0}) {{ SaveMediaListEntry({1}) {{id updatedAt notes customLists advancedScores score}} }}'.format(
             vars_defn, subs_defn)
 
         data = self._request(query, values)['data']
@@ -383,7 +525,7 @@ fragment mediaListEntry on MediaList {
 
         if method == utils.SearchMethod.KW:
             query = "query ($query: String, $type: MediaType) { Page { media(search: $query, type: $type) {"
-            variables = {'query': urllib.parse.quote_plus(criteria)}
+            variables = {'query': str(criteria)}
         elif method == utils.SearchMethod.SEASON:
             season, seasonYear = criteria
 
@@ -449,7 +591,7 @@ fragment mediaListEntry on MediaList {
 }'''
 
         for show in itemlist:
-            variables = {'id': show['id'], 'listType': self.mediatype.upper()}
+            variables = {'id': show['id'], 'type': self.mediatype.upper()}
             data = self._request(query, variables)['data']['Media']
             infolist.append(self._parse_info(data))
 
@@ -458,7 +600,18 @@ fragment mediaListEntry on MediaList {
 
     def media_info(self):
         """Return information about the currently selected mediatype."""
-        return self.mediatypes[self.mediatype]
+        info = self.mediatypes[self.mediatype]
+        info['can_notes'] = True
+        info['can_custom_lists'] = True
+        info['can_advanced_scores'] = True
+        info['custom_lists'] = getattr(self, 'custom_lists', None) or self._get_userconfig('custom_lists_' + self.mediatype) or []
+        info['advanced_scoring'] = getattr(self, 'advanced_scoring', None) or self._get_userconfig('advanced_scoring_' + self.mediatype) or [
+            'Story', 'Characters', 'Visuals', 'Audio', 'Enjoyment'
+        ]
+        info['advanced_scoring_enabled'] = getattr(self, 'advanced_scoring_enabled', None)
+        if info['advanced_scoring_enabled'] is None:
+            info['advanced_scoring_enabled'] = self._get_userconfig('advanced_scoring_enabled_' + self.mediatype) or False
+        return info
 
     def _parse_info(self, item):
         info = utils.show()
@@ -507,8 +660,27 @@ fragment mediaListEntry on MediaList {
         (media['score_max'], media['score_step']) = self.score_types[fmt]
 
     def _get_aliases(self, item):
-        aliases = [a for a in (item['title']['romaji'], item['title']
-                               ['english'], item['title']['native']) if a] + item['synonyms']
+        title = item.get('title') or {}
+        raw_aliases = []
+        if isinstance(title, dict):
+            for k in ('romaji', 'english', 'native'):
+                val = title.get(k)
+                if val and isinstance(val, str):
+                    raw_aliases.append(val.strip())
+        elif isinstance(title, str):
+            raw_aliases.append(title.strip())
+
+        synonyms = item.get('synonyms') or []
+        if isinstance(synonyms, list):
+            for s in synonyms:
+                if s and isinstance(s, str):
+                    raw_aliases.append(s.strip())
+
+        # Deduplicate while preserving order
+        aliases = []
+        for a in raw_aliases:
+            if a and a not in aliases:
+                aliases.append(a)
 
         return aliases
 
